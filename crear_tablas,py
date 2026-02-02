@@ -1,0 +1,49 @@
+import sqlite3
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "pos_albercas.db")
+
+conn = sqlite3.connect(DB_PATH)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE meseros (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE productos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT,
+    precio REAL,
+    categoria TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE comandas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre_mesa TEXT,
+    mesero TEXT,
+    total REAL DEFAULT 0,
+    estado TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE comanda_detalle (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    comanda_id INTEGER,
+    producto_id INTEGER,
+    cantidad INTEGER,
+    subtotal REAL
+)
+""")
+
+conn.commit()
+conn.close()
+
+print("Tablas creadas correctamente.")
