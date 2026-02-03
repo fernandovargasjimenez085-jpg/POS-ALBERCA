@@ -1,11 +1,17 @@
 from flask import Flask, request, redirect, jsonify
 import sqlite3
 import os
+from flask import session, flash, redirect, url_for
+
+# Contraseña fija para admin (cámbiala por la que quieras usar)
+ADMIN_PASSWORD = "2706"  # ← cámbiala a algo más seguro en producción
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "pos_albercas.db")
 
 app = Flask(__name__)
+
+app.secret_key = "albercas-dory-pos-clave-secreta-987654321-cambia-esto"
 
 def obtener_meseros():
     conn = sqlite3.connect(DB_PATH)
@@ -31,23 +37,42 @@ def obtener_productos():
 
     return productos
 
-def agregar_producto_a_comanda(comanda_id, producto_id):
+def agregar_producto_a_comanda(comanda_id, producto_id, cantidad=1):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    # Verificar si ya existe el producto en la comanda
+    cursor.execute("""
+        SELECT id, cantidad, subtotal 
+        FROM comanda_detalle 
+        WHERE comanda_id = ? AND producto_id = ?
+    """, (comanda_id, producto_id))
+    existente = cursor.fetchone()
 
     cursor.execute("SELECT precio FROM productos WHERE id=?", (producto_id,))
     precio = cursor.fetchone()[0]
 
-    cursor.execute("""
-        INSERT INTO comanda_detalle (comanda_id, producto_id, cantidad, subtotal)
-        VALUES (?, ?, ?, ?)
-    """, (comanda_id, producto_id, 1, precio))
+    if existente:
+        detalle_id, cant_actual, subtotal_actual = existente
+        nueva_cant = cant_actual + cantidad
+        nuevo_subtotal = nueva_cant * precio
+        cursor.execute("""
+            UPDATE comanda_detalle 
+            SET cantidad = ?, subtotal = ? 
+            WHERE id = ?
+        """, (nueva_cant, nuevo_subtotal, detalle_id))
+    else:
+        cursor.execute("""
+            INSERT INTO comanda_detalle (comanda_id, producto_id, cantidad, subtotal)
+            VALUES (?, ?, ?, ?)
+        """, (comanda_id, producto_id, cantidad, precio * cantidad))
 
+    # Actualizar total de la comanda
     cursor.execute("""
         UPDATE comandas
-        SET total = total + ?
+        SET total = (SELECT IFNULL(SUM(subtotal), 0) FROM comanda_detalle WHERE comanda_id = ?)
         WHERE id = ?
-    """, (precio, comanda_id))
+    """, (comanda_id, comanda_id))
 
     conn.commit()
     conn.close()
@@ -55,17 +80,15 @@ def agregar_producto_a_comanda(comanda_id, producto_id):
 def obtener_detalle_comanda(comanda_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT d.id, p.nombre, d.cantidad, d.subtotal
         FROM comanda_detalle d
         JOIN productos p ON d.producto_id = p.id
         WHERE d.comanda_id = ?
     """, (comanda_id,))
-
     datos = cursor.fetchall()
     conn.close()
-    return datos
+    return datos  # Debe retornar algo como: [(5, 'Cerveza', 2, 80.0), ...]
 
 def quitar_item(detalle_id, comanda_id, subtotal):
     conn = sqlite3.connect(DB_PATH)
@@ -104,63 +127,120 @@ def obtener_categorias():
     conn.close()
     return cats
 
+def obtener_todos_productos():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nombre, precio, categoria FROM productos ORDER BY categoria, nombre")
+    productos = cursor.fetchall()
+    conn.close()
+    return productos
+
+def eliminar_producto(producto_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM productos WHERE id = ?", (producto_id,))
+    conn.commit()
+    conn.close()
+    
 @app.route("/")
 def inicio():
     return """
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {
-    font-family: Arial;
-    background: #f2f2f2;
-    display: flex;
-    height: 100vh;
-    justify-content: center;
-    align-items: center;
-    margin: 0;
-}
-
-.contenedor {
-    text-align: center;
-}
-
-h1 {
-    margin-bottom: 50px;
-}
-
-button {
-    width: 280px;
-    padding: 30px;
-    font-size: 28px;
-    margin: 20px;
-    border: none;
-    border-radius: 12px;
-    color: white;
-}
-
-.mesero { background: #2196F3; }
-.caja { background: #4CAF50; }
-.productos { background: #FF9800; }
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+        }
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #a1c4fd 0%, #c2e9fb 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--dark);
+        }
+        .logo {
+            font-size: 3.5rem;
+            font-weight: 700;
+            color: white;
+            text-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .subtitle {
+            font-size: 1.3rem;
+            color: rgba(255,255,255,0.9);
+            margin-bottom: 60px;
+            text-align: center;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            width: 90%;
+            max-width: 900px;
+            padding: 0 20px;
+        }
+        .option-card {
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 35px 20px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            text-decoration: none;
+            color: var(--dark);
+        }
+        .option-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 40px rgba(0,180,216,0.3);
+        }
+        .icon {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+            color: var(--primary);
+        }
+        .title {
+            font-size: 1.6rem;
+            font-weight: 600;
+        }
+    </style>
 </head>
-
 <body>
-    <div class="contenedor">
-        <h1>POS JARDIN DORY'S</h1>
 
-        <a href="/mesero">
-            <button class="mesero">SOY MESERO</button>
-        </a><br>
+<div class="logo">JARDÍN DORY'S</div>
+<div class="subtitle">Bienvenido al punto de venta</div>
 
-        <a href="/caja">
-            <button class="caja">CAJA</button>
-        </a><br>
+<div class="grid">
+    <a href="/mesero" class="option-card">
+        <div class="icon"><i class="fas fa-user-tie"></i></div>
+        <div class="title">Soy Mesero</div>
+    </a>
 
-        <a href="/productos">
-            <button class="productos">ADMIN PRODUCTOS</button>
-        </a>
-    </div>
+    <a href="/caja" class="option-card">
+        <div class="icon"><i class="fas fa-cash-register"></i></div>
+        <div class="title">Caja</div>
+    </a>
+
+    <a href="/productos" class="option-card">
+        <div class="icon"><i class="fas fa-boxes"></i></div>
+        <div class="title">Admin Productos</div>
+    </a>
+</div>
+
 </body>
 </html>
 """
@@ -169,48 +249,116 @@ button {
 @app.route("/mesero")
 def mesero():
     lista_meseros = obtener_meseros()
-    botones = ""
-    for m in lista_meseros:
-        botones += f'<a href="/mesero/{m}"><button style="font-size:25px;margin:10px;">{m}</button></a><br>'
+    
+    if not lista_meseros:
+        contenido = '''
+        <div style="text-align:center; padding:60px 20px; color:#636e72; font-size:1.3rem;">
+            <i class="fas fa-users-slash fa-3x" style="color:#ff9e00; margin-bottom:20px;"></i><br>
+            No hay meseros registrados aún
+        </div>
+        '''
+    else:
+        tarjetas = ""
+        for m in lista_meseros:
+            inicial = m[0].upper() if m else "?"
+            tarjetas += f'''
+            <a href="/mesero/{m}" style="text-decoration:none;">
+                <div class="mesero-card">
+                    <div class="avatar">{inicial}</div>
+                    <div class="nombre">{m}</div>
+                </div>
+            </a>
+            '''
+        contenido = f'<div class="grid">{tarjetas}</div>'
+
     return f"""
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{
-    font-family: Arial;
-    background: #f2f2f2;
-    margin: 0;
-    padding: 20px;
-    text-align: center;
-}}
-
-h2 {{
-    margin-bottom: 30px;
-}}
-
-.grid {{
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 20px;
-}}
-
-button {{
-    padding: 30px;
-    font-size: 26px;
-    border: none;
-    border-radius: 12px;
-    background: #2196F3;
-    color: white;
-}}
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --light: #f8f9fa;
+            --dark: #2d3436;
+            --gray: #636e72;
+        }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            color: var(--dark);
+        }}
+        .atras {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,180,216,0.3);
+        }}
+        h2 {{
+            text-align: center;
+            margin: 60px 0 40px;
+            font-size: 2rem;
+            color: var(--primary-dark);
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }}
+        .mesero-card {{
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }}
+        .mesero-card:hover {{
+            transform: translateY(-8px);
+            box-shadow: 0 15px 30px rgba(0,180,216,0.2);
+        }}
+        .avatar {{
+            width: 80px;
+            height: 80px;
+            background: var(--primary);
+            color: white;
+            font-size: 2.2rem;
+            font-weight: 600;
+            line-height: 80px;
+            border-radius: 50%;
+            margin: 0 auto 15px;
+        }}
+        .nombre {{
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: var(--dark);
+        }}
+    </style>
 </head>
-
 <body>
-    <h2>Selecciona tu nombre</h2>
-    <div class="grid">
-        {''.join([f"<a href='/mesero/{m}'><button>{m}</button></a>" for m in obtener_meseros()])}
-    </div>
+
+<button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
+
+<h2>Selecciona tu nombre</h2>
+
+{contenido}
+
 </body>
 </html>
 """
@@ -230,9 +378,6 @@ def pantalla_mesero(nombre):
 
         comanda_id = cursor.lastrowid
         conn.commit()
-        conn.close()
-
-        return redirect(f"/comanda/{comanda_id}/{nombre}")
 
     cursor.execute("""
         SELECT id, nombre_mesa
@@ -243,92 +388,205 @@ def pantalla_mesero(nombre):
     comandas = cursor.fetchall()
     conn.close()
 
-    lista = ""
-    for c in comandas:
-        lista += f'''
-        <div class="comanda"
-             onclick="window.location.href='/comanda/{c[0]}/{nombre}'">
-            Mesa: <b>{c[1]}</b>
+    tarjetas = ""
+    if comandas:
+        for c in comandas:
+            tarjetas += f'''
+            <div class="comanda-card" onclick="location.href='/comanda/{c[0]}/{nombre}'">
+                <div class="card-header">
+                    <div class="mesa-title">Mesa {c[1]}</div>
+                    <div class="icon"><i class="fas fa-utensils"></i></div>
+                </div>
+                <div class="card-footer">
+                    <span class="ver-btn">Ver comanda →</span>
+                </div>
+            </div>
+            '''
+    else:
+        tarjetas = '''
+        <div class="empty-state">
+            <i class="fas fa-coffee fa-3x" style="color:var(--accent); margin-bottom:15px;"></i><br>
+            No tienes comandas abiertas aún
         </div>
         '''
 
-    return f'''
+    return f"""
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{
-    font-family: Arial;
-    margin: 0;
-    background: #f2f2f2;
-}}
-
-.top {{
-    background: white;
-    padding: 20px;
-    font-size: 26px;
-    text-align: center;
-    border-bottom: 3px solid black;
-}}
-
-.lista {{
-    padding: 20px;
-}}
-
-.comanda {{
-    background: white;
-    padding: 20px;
-    margin-bottom: 10px;
-    border-radius: 10px;
-    font-size: 22px;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-}}
-
-form {{
-    padding: 20px;
-    background: white;
-    margin: 20px;
-    border-radius: 10px;
-}}
-
-input {{
-    width: 100%;
-    padding: 15px;
-    font-size: 22px;
-    margin-bottom: 15px;
-}}
-
-.nueva {{
-    width: 100%;
-    background: #4CAF50;
-    color: white;
-    font-size: 26px;
-    padding: 20px;
-    border: none;
-    border-radius: 10px;
-}}
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+            --gray: #636e72;
+        }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            padding: 20px;
+            color: var(--dark);
+            min-height: 100vh;
+        }}
+        .top-bar {{
+            position: sticky;
+            top: 0;
+            background: white;
+            padding: 15px;
+            border-bottom: 3px solid var(--primary);
+            box-shadow: 0 4px 15px rgba(0,180,216,0.15);
+            z-index: 100;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .mesero-name {{
+            font-size: 1.6rem;
+            font-weight: 600;
+            color: var(--primary-dark);
+        }}
+        .atras {{
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,180,216,0.3);
+        }}
+        h3 {{
+            text-align: center;
+            margin: 40px 0 30px;
+            font-size: 1.8rem;
+            color: var(--dark);
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }}
+        .comanda-card {{
+            background: white;
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }}
+        .comanda-card:hover {{
+            transform: translateY(-8px);
+            box-shadow: 0 15px 35px rgba(0,180,216,0.2);
+        }}
+        .card-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }}
+        .mesa-title {{
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--dark);
+        }}
+        .icon {{
+            font-size: 1.8rem;
+            color: var(--primary);
+        }}
+        .card-footer {{
+            text-align: right;
+        }}
+        .ver-btn {{
+            background: var(--primary);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-weight: 500;
+        }}
+        .nueva-btn {{
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: var(--success);
+            color: white;
+            border: none;
+            width: 70px;
+            height: 70px;
+            border-radius: 50%;
+            font-size: 2.2rem;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(6,214,160,0.3);
+            transition: all 0.3s;
+        }}
+        .nueva-btn:hover {{
+            transform: scale(1.1);
+        }}
+        .empty-state {{
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--gray);
+            font-size: 1.4rem;
+        }}
+        form {{
+            background: white;
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+            margin: 30px auto;
+            max-width: 500px;
+        }}
+        input {{
+            width: 100%;
+            padding: 14px;
+            font-size: 1.1rem;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }}
+        .submit-btn {{
+            width: 100%;
+            padding: 16px;
+            background: var(--success);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.2rem;
+            cursor: pointer;
+        }}
+    </style>
 </head>
-
 <body>
 
-<div class="top">
-    Mesero: <b>{nombre}</b>
+<div class="top-bar">
+    <button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
+    <div class="mesero-name">Mesero: {nombre}</div>
 </div>
 
-<div class="lista">
-    <h3>Comandas abiertas</h3>
-    {lista}
+<h3>Mis comandas abiertas</h3>
+
+<div class="grid">
+    {tarjetas}
 </div>
 
 <form method="POST">
-    <input type="text" name="nombre_mesa" placeholder="Nombre de la nueva mesa" required>
-    <button class="nueva" type="submit">+ NUEVA COMANDA</button>
+    <input type="text" name="nombre_mesa" placeholder="Nombre o número de la mesa" required>
+    <button type="submit" class="submit-btn">+ Nueva Comanda</button>
 </form>
+
+<button class="nueva-btn" onclick="document.querySelector('form').scrollIntoView({{behavior: 'smooth'}})">
+    <i class="fas fa-plus"></i>
+</button>
 
 </body>
 </html>
-'''
+"""
 
 @app.route("/comanda/<int:comanda_id>/<nombre>")
 def ver_comanda(comanda_id, nombre):
@@ -336,206 +594,327 @@ def ver_comanda(comanda_id, nombre):
     total = obtener_total_comanda(comanda_id)
     detalle = obtener_detalle_comanda(comanda_id)
 
-    # ---------- Categorías ----------
     tabs = ""
     bloques = ""
+    primera_cat = ""
 
-    for cat, lista in productos.items():
-        tabs += f"<button onclick=\"mostrarCategoria('{cat}')\">{cat}</button>"
+    if productos:
+        primera_cat = list(productos.keys())[0]
+        for cat, lista in productos.items():
+            tabs += f'<button class="cat-tab" onclick="mostrarCategoria(\'{cat}\')">{cat}</button>'
+            botones = ""
+            for p in lista:
+                botones += f'''
+                <div class="producto-card" onclick="agregarProducto({p[0]})">
+                    <div class="prod-nombre">{p[1]}</div>
+                    <div class="prod-precio">${p[2]:.2f}</div>
+                </div>
+                '''
+            bloques += f'<div class="productos-grid" id="cat_{cat}" style="display:none;">{botones}</div>'
 
-        botones = ""
-        for p in lista:
-            botones += f"""
-            <button class="producto" onclick="agregarProducto({p[0]})">
-                {p[1]}<br>${p[2]}
-            </button>
-            """
-
-        bloques += f"""
-        <div class="productos" id="cat_{cat}">
-            {botones}
-        </div>
-        """
-
-    # ---------- Lista de productos agregados ----------
     lista_html = ""
     for item in detalle:
-        # item = (detalle_id, nombre, cantidad, subtotal)
-        lista_html += f"""
-        <div onclick="quitarProducto({item[0]})"
-             style="padding:8px; border-bottom:1px solid #ccc;">
-            {item[2]} x {item[1]} ❌
+        detalle_id = item[0]
+        nombre_producto = item[1]
+        cantidad = item[2]
+        subtotal = item[3]
+        lista_html += f'''
+        <div class="item-comanda">
+            <div class="item-info">
+                <span class="cantidad">{cantidad} ×</span> {nombre_producto}
+                <span class="subtotal">${subtotal:.2f}</span>
+            </div>
+            <div class="item-controles">
+                <button class="btn-circle menos" onclick="cambiarCantidad({detalle_id}, -1)">−</button>
+                <button class="btn-circle mas" onclick="cambiarCantidad({detalle_id}, 1)">+</button>
+            </div>
         </div>
-        """
+        '''
 
-    primera_cat = list(productos.keys())[0]
+    if not lista_html:
+        lista_html = '<div class="empty-state">Aún no hay productos en esta comanda</div>'
 
+    # Siempre retornamos HTML, incluso si algo falla
     return f"""
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{
-    font-family: Arial;
-    margin: 0;
-    background: #f2f2f2;
-}}
-
-.top {{
-    position: sticky;
-    top: 0;
-    background: white;
-    padding: 10px;
-    border-bottom: 3px solid black;
-    text-align: center;
-}}
-
-.total {{
-    font-size: 34px;
-    font-weight: bold;
-    color: green;
-}}
-
-.lista {{
-    background: white;
-    padding: 10px;
-    height: 130px;
-    overflow-y: auto;
-    border-bottom: 3px solid black;
-}}
-
-.categorias {{
-    display: flex;
-    background: #222;
-}}
-
-.categorias button {{
-    flex: 1;
-    padding: 15px;
-    font-size: 18px;
-    border: none;
-    background: #333;
-    color: white;
-}}
-
-.productos {{
-    display: none;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    padding: 10px;
-}}
-
-.producto {{
-    padding: 20px;
-    font-size: 18px;
-    border: none;
-    border-radius: 10px;
-    background: #2196F3;
-    color: white;
-}}
-
-.acciones {{
-    position: sticky;
-    bottom: 0;
-    display: flex;
-}}
-
-.acciones button {{
-    flex: 1;
-    font-size: 22px;
-    padding: 15px;
-    border: none;
-    color: white;
-}}
-
-.ver {{ background: orange; }}
-.cerrar {{ background: red; }}
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+            --gray: #636e72;
+        }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            color: var(--dark);
+            min-height: 100vh;
+        }}
+        .top-bar {{
+            position: sticky;
+            top: 0;
+            background: white;
+            padding: 15px;
+            border-bottom: 3px solid var(--primary);
+            box-shadow: 0 4px 15px rgba(0,180,216,0.15);
+            z-index: 100;
+            text-align: center;
+        }}
+        .atras {{
+            position: absolute;
+            left: 15px;
+            top: 15px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,180,216,0.3);
+        }}
+        .total-display {{
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--success);
+            margin: 10px 0;
+        }}
+        .categorias {{
+            display: flex;
+            overflow-x: auto;
+            padding: 10px;
+            background: white;
+            border-bottom: 1px solid #eee;
+        }}
+        .cat-tab {{
+            background: var(--primary);
+            color: white;
+            margin: 0 6px;
+            padding: 12px 20px;
+            border-radius: 30px;
+            white-space: nowrap;
+            font-weight: 500;
+            flex-shrink: 0;
+            border: none;
+            cursor: pointer;
+        }}
+        .cat-tab.active {{
+            background: var(--primary-dark);
+        }}
+        .productos-grid {{
+            display: none;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 15px;
+            padding: 20px;
+        }}
+        .producto-card {{
+            background: white;
+            border-radius: 16px;
+            padding: 20px 10px;
+            text-align: center;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.08);
+            transition: all 0.25s ease;
+            cursor: pointer;
+        }}
+        .producto-card:hover {{
+            transform: translateY(-6px);
+            box-shadow: 0 12px 25px rgba(0,180,216,0.2);
+        }}
+        .prod-nombre {{
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+        }}
+        .prod-precio {{
+            color: var(--accent);
+            font-size: 1.3rem;
+            font-weight: 700;
+        }}
+        .lista-comanda {{
+            padding: 15px;
+            background: white;
+            min-height: 150px;
+            max-height: 40vh;
+            overflow-y: auto;
+        }}
+        .item-comanda {{
+            background: var(--light);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        }}
+        .item-info {{
+            flex: 1;
+        }}
+        .cantidad {{
+            font-weight: 700;
+            color: var(--primary);
+            margin-right: 8px;
+        }}
+        .subtotal {{
+            float: right;
+            color: var(--success);
+            font-weight: 600;
+        }}
+        .item-controles {{
+            display: flex;
+            gap: 12px;
+        }}
+        .btn-circle {{
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            font-size: 1.5rem;
+            line-height: 44px;
+            text-align: center;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        .menos {{ background: var(--danger); }}
+        .mas {{ background: var(--success); }}
+        .empty-state {{
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray);
+            font-size: 1.3rem;
+        }}
+        .acciones {{
+            position: sticky;
+            bottom: 0;
+            background: white;
+            padding: 15px;
+            border-top: 2px solid #eee;
+            box-shadow: 0 -4px 15px rgba(0,0,0,0.1);
+        }}
+        .cerrar-btn {{
+            background: var(--danger);
+            color: white;
+            width: 100%;
+            padding: 16px;
+            font-size: 1.3rem;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+        }}
+    </style>
 </head>
-
 <body>
 
-<div class="top">
-    Mesa: {nombre}<br>
-    <div class="total">$ <span id="total">{total}</span></div>
-</div>
-
-<div class="lista" id="lista">
-    {lista_html}
+<div class="top-bar">
+    <button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
+    <div>Mesa: <strong>{nombre}</strong></div>
+    <div class="total-display">$ <span id="total">{total:.2f}</span></div>
 </div>
 
 <div class="categorias">
     {tabs}
 </div>
 
-{bloques}
+<div id="productos-container">
+    {bloques}
+</div>
+
+<div class="lista-comanda" id="lista">
+    {lista_html}
+</div>
 
 <div class="acciones">
-    <button class="ver"
-        onclick="window.location.href='/ticket/{comanda_id}'">
-        VER CUENTA
-    </button>
-    <button class="cerrar"
-        onclick="window.location.href='/cerrar/{comanda_id}/{nombre}'">
-        CERRAR
+    <button class="cerrar-btn" onclick="if(confirm('¿Cerrar esta comanda?')) location.href='/cerrar/{comanda_id}/{nombre}'">
+        <i class="fas fa-check-circle"></i> CERRAR COMANDA
     </button>
 </div>
 
 <script>
+function mostrarCategoria(cat) {{
+    document.querySelectorAll('.productos-grid').forEach(function(el) {{
+        el.style.display = 'none';
+    }});
+    var target = document.getElementById('cat_' + cat);
+    if (target) {{
+        target.style.display = 'grid';
+    }}
+    document.querySelectorAll('.cat-tab').forEach(function(btn) {{
+        btn.classList.remove('active');
+    }});
+    var activeBtn = Array.from(document.querySelectorAll('.cat-tab')).find(function(btn) {{
+        return btn.textContent === cat;
+    }});
+    if (activeBtn) activeBtn.classList.add('active');
+}}
+
 function agregarProducto(producto_id) {{
     fetch("/api/agregar_producto", {{
         method: "POST",
-        headers: {{
-            "Content-Type": "application/x-www-form-urlencoded"
-        }},
-        body: `comanda_id={comanda_id}&producto_id=${{producto_id}}`
+        headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
+        body: "comanda_id={comanda_id}&producto_id=" + producto_id
     }})
-    .then(res => res.json())
-    .then(data => {{
-        actualizarVista(data);
-    }});
+    .then(r => r.json())
+    .then(data => actualizarVista(data))
+    .catch(err => console.error(err));
 }}
 
-function quitarProducto(detalle_id) {{
-    fetch("/api/quitar_producto", {{
+function cambiarCantidad(detalle_id, delta) {{
+    fetch("/api/cambiar_cantidad", {{
         method: "POST",
-        headers: {{
-            "Content-Type": "application/x-www-form-urlencoded"
-        }},
-        body: `detalle_id=${{detalle_id}}`
+        headers: {{"Content-Type": "application/x-www-form-urlencoded"}},
+        body: "detalle_id=" + detalle_id + "&delta=" + delta
     }})
-    .then(res => res.json())
-    .then(data => {{
-        actualizarVista(data);
-    }});
+    .then(r => r.json())
+    .then(data => actualizarVista(data))
+    .catch(err => console.error(err));
 }}
 
 function actualizarVista(data) {{
-    document.getElementById("total").innerText = data.total;
-
-    let lista = "";
-    data.detalle.forEach(item => {{
-        lista += `<div onclick="quitarProducto(${{item[0]}})"
-                     style="padding:8px;border-bottom:1px solid #ccc;">
-                     ${{item[2]}} x ${{item[1]}} ❌
-                  </div>`;
-    }});
-    document.getElementById("lista").innerHTML = lista;
+    if (!data || typeof data.total !== 'number') {{
+        console.warn("Respuesta inválida:", data);
+        return;
+    }}
+    document.getElementById("total").innerText = Number(data.total).toFixed(2);
+    
+    var html = "";
+    if (Array.isArray(data.detalle)) {{
+        data.detalle.forEach(function(item) {{
+            if (Array.isArray(item) && item.length >= 4) {{
+                html += '<div class="item-comanda">' +
+                    '<div class="item-info">' +
+                        '<span class="cantidad">' + item[2] + ' ×</span> ' + item[1] +
+                        '<span class="subtotal">$' + Number(item[3]).toFixed(2) + '</span>' +
+                    '</div>' +
+                    '<div class="item-controles">' +
+                        '<button class="btn-circle menos" onclick="cambiarCantidad(' + item[0] + ', -1)">−</button>' +
+                        '<button class="btn-circle mas" onclick="cambiarCantidad(' + item[0] + ', 1)">+</button>' +
+                    '</div>' +
+                '</div>';
+            }}
+        }});
+    }} else {{
+        html = '<div class="empty-state">Aún no hay productos en esta comanda</div>';
+    }}
+    document.getElementById("lista").innerHTML = html;
 }}
 
-function mostrarCategoria(cat) {{
-    document.querySelectorAll('.productos').forEach(p => p.style.display = 'none');
-    document.getElementById('cat_' + cat).style.display = 'grid';
-}}
-
-mostrarCategoria("{primera_cat}");
+// Inicializar
+""" + (f"mostrarCategoria('{primera_cat}');" if primera_cat else "") + """
 </script>
 
 </body>
 </html>
 """
-
-
 
 
 @app.route("/cerrar/<int:comanda_id>/<nombre>")
@@ -551,171 +930,542 @@ def cerrar_comanda(comanda_id, nombre):
 def caja():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, nombre_mesa FROM comandas WHERE estado='abierta'")
+    cursor.execute("""
+        SELECT id, nombre_mesa 
+        FROM comandas 
+        WHERE estado = 'abierta' 
+        ORDER BY id DESC
+    """)
     comandas = cursor.fetchall()
     conn.close()
 
-    filas = ""
-    for c in comandas:
-        total = obtener_total_comanda(c[0])
-        filas += f"""
-        <div>
-            <b>{c[1]}</b> - ${total}
-            <button onclick="window.location.href='/ticket/{c[0]}'">VER</button>
-            <button onclick="window.location.href='/cerrar/{c[0]}/CAJA'">CERRAR</button>
+    tarjetas = ""
+    if not comandas:
+        tarjetas = '''
+        <div style="text-align:center; padding:80px 20px; color:var(--gray); font-size:1.4rem;">
+            <i class="fas fa-inbox fa-4x" style="color:var(--accent); margin-bottom:20px; opacity:0.6;"></i><br>
+            No hay comandas abiertas en este momento
         </div>
-        """
+        '''
+    else:
+        for com in comandas:
+            comanda_id, mesa = com
+            total = obtener_total_comanda(comanda_id)
+            tarjetas += f'''
+            <div class="comanda-card">
+                <div class="card-header">
+                    <div class="mesa-nombre">Mesa {mesa}</div>
+                    <div class="total-card">${total:.2f}</div>
+                </div>
+                <div class="card-actions">
+                    <button class="btn-ver" onclick="location.href='/ticket/{comanda_id}'">
+                        <i class="fas fa-eye"></i> Ver Cuenta
+                    </button>
+                    <button class="btn-cerrar" onclick="if(confirm('¿Cerrar comanda?')) location.href='/cerrar/{comanda_id}/CAJA'">
+                        <i class="fas fa-times-circle"></i> Cerrar
+                    </button>
+                </div>
+            </div>
+            '''
 
     return f"""
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{
-    font-family: Arial;
-    background: #f2f2f2;
-    margin: 0;
-    padding: 20px;
-}}
-
-h1 {{
-    text-align: center;
-    margin-bottom: 30px;
-}}
-
-.grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 20px;
-}}
-
-.card {{
-    background: white;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 3px 8px rgba(0,0,0,0.2);
-    text-align: center;
-}}
-
-.mesa {{
-    font-size: 24px;
-    margin-bottom: 10px;
-}}
-
-.total {{
-    font-size: 20px;
-    margin-bottom: 15px;
-    color: green;
-}}
-
-button {{
-    width: 45%;
-    padding: 15px;
-    font-size: 18px;
-    border: none;
-    border-radius: 8px;
-    margin: 5px;
-    color: white;
-}}
-
-.ver {{ background: #2196F3; }}
-.cerrar {{ background: #f44336; }}
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+            --gray: #636e72;
+        }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            padding: 20px;
+            color: var(--dark);
+            min-height: 100vh;
+        }}
+        .atras {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,180,216,0.3);
+        }}
+        h1 {{
+            text-align: center;
+            margin: 60px 0 40px;
+            font-size: 2.2rem;
+            color: var(--primary-dark);
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 25px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }}
+        .comanda-card {{
+            background: white;
+            border-radius: 20px;
+            padding: 25px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+        }}
+        .comanda-card:hover {{
+            transform: translateY(-8px);
+            box-shadow: 0 15px 35px rgba(0,180,216,0.2);
+        }}
+        .card-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }}
+        .mesa-nombre {{
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: var(--dark);
+        }}
+        .total-card {{
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--success);
+            background: rgba(6,214,160,0.1);
+            padding: 8px 16px;
+            border-radius: 12px;
+        }}
+        .card-actions {{
+            display: flex;
+            gap: 15px;
+        }}
+        .btn-ver, .btn-cerrar {{
+            flex: 1;
+            padding: 14px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        .btn-ver {{
+            background: var(--primary);
+        }}
+        .btn-cerrar {{
+            background: var(--danger);
+        }}
+        .btn-ver:hover, .btn-cerrar:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 15px rgba(0,0,0,0.15);
+        }}
+    </style>
 </head>
-
 <body>
 
-<h1>COMANDAS ABIERTAS</h1>
+<button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
+
+<h1>Comandas Abiertas - Caja</h1>
 
 <div class="grid">
-    {''.join([f"""
-        <div class='card'>
-            <div class='mesa'>{c[1]}</div>
-            <div class='total'>Total: ${obtener_total_comanda(c[0])}</div>
-            <button class='ver' onclick="location.href='/ticket/{c[0]}'">VER</button>
-            <button class='cerrar' onclick="location.href='/cerrar/{c[0]}/CAJA'">CERRAR</button>
-        </div>
-    """ for c in comandas])}
+    {tarjetas}
 </div>
 
 </body>
 </html>
 """
-@app.route("/productos", methods=["GET", "POST"])
-def productos_admin():
+
+@app.route("/productos/login", methods=["GET", "POST"])
+def productos_login():
     if request.method == "POST":
-        nombre = request.form["nombre"]
-        precio = request.form["precio"]
-        categoria = request.form["categoria"]
-
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO productos (nombre, precio, categoria)
-            VALUES (?, ?, ?)
-        """, (nombre, precio, categoria))
-        conn.commit()
-        conn.close()
-
-        return redirect("/productos")
-
-    categorias = obtener_categorias()
-
-    opciones = ""
-    for c in categorias:
-        opciones += f"<option value='{c}'>{c}</option>"
+        if request.form.get("password") == ADMIN_PASSWORD:
+            session["admin_authenticated"] = True
+            return redirect("/productos")
+        else:
+            error = "Contraseña incorrecta"
+    else:
+        error = ""
 
     return f"""
-    <html>
-    <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
-    body {{
-        font-family: Arial;
-        background: #f2f2f2;
-        padding: 20px;
-    }}
-    input, select {{
-        width: 100%;
-        padding: 15px;
-        font-size: 18px;
-        margin-bottom: 15px;
-    }}
-    button {{
-        width: 100%;
-        padding: 15px;
-        font-size: 20px;
-        background: #2196F3;
-        color: white;
-        border: none;
-        border-radius: 10px;
-    }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }}
+        .container {{
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+        }}
+        h2 {{
+            color: #00b4d8;
+            margin-bottom: 30px;
+        }}
+        input {{
+            width: 100%;
+            padding: 14px;
+            margin: 12px 0;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            font-size: 1.1rem;
+        }}
+        button {{
+            width: 100%;
+            padding: 14px;
+            background: #00b4d8;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }}
+        button:hover {{
+            background: #0096c7;
+        }}
+        .error {{
+            color: #ef476f;
+            margin-top: 15px;
+            font-weight: 500;
+        }}
+        .atras {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: #00b4d8;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+        }}
     </style>
-    </head>
-    <body>
+</head>
+<body>
 
-    <h2>Agregar Producto</h2>
+<button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
 
+<div class="container">
+    <h2>Acceso Administrador</h2>
     <form method="POST">
-        <input type="text" name="nombre" placeholder="Nombre del producto" required>
-        <input type="number" step="0.01" name="precio" placeholder="Precio" required>
-        <select name="categoria">
-            {opciones}
-        </select>
-        <button type="submit">Guardar Producto</button>
+        <input type="password" name="password" placeholder="Contraseña" required autofocus>
+        <button type="submit">Entrar</button>
     </form>
+    {f'<div class="error">{error}</div>' if error else ''}
+</div>
 
-    </body>
-    </html>
-    """
+</body>
+</html>
+"""
+
+
+@app.route("/productos", methods=["GET", "POST"])
+def productos_admin():
+    if not session.get("admin_authenticated"):
+        return redirect("/productos/login")
+
+    mensaje = ""
+    tipo_mensaje = "success"
+
+    accion = request.args.get("accion", "")
+    producto_id = request.args.get("id", type=int)
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # Eliminar producto
+    if accion == "eliminar" and producto_id:
+        cursor.execute("DELETE FROM productos WHERE id = ?", (producto_id,))
+        conn.commit()
+        mensaje = "Producto eliminado correctamente"
+        tipo_mensaje = "success"
+
+    # Agregar o editar producto
+    if request.method == "POST":
+        nombre = request.form.get("nombre", "").strip()
+        precio_str = request.form.get("precio", "").strip()
+        categoria = request.form.get("categoria", "").strip()
+        edit_id = request.form.get("edit_id", type=int)
+
+        if not nombre or not categoria or not precio_str:
+            mensaje = "Completa todos los campos"
+            tipo_mensaje = "error"
+        else:
+            try:
+                precio = float(precio_str)
+                if precio <= 0:
+                    mensaje = "El precio debe ser mayor a 0"
+                    tipo_mensaje = "error"
+                else:
+                    if edit_id:
+                        cursor.execute("""
+                            UPDATE productos 
+                            SET nombre = ?, precio = ?, categoria = ? 
+                            WHERE id = ?
+                        """, (nombre, precio, categoria, edit_id))
+                        mensaje = "Producto actualizado correctamente"
+                    else:
+                        cursor.execute("""
+                            INSERT INTO productos (nombre, precio, categoria) 
+                            VALUES (?, ?, ?)
+                        """, (nombre, precio, categoria))
+                        mensaje = "Producto agregado correctamente"
+                    conn.commit()
+                    tipo_mensaje = "success"
+            except ValueError:
+                mensaje = "El precio debe ser un número válido"
+                tipo_mensaje = "error"
+
+    # Obtener productos
+    cursor.execute("SELECT id, nombre, precio, categoria FROM productos ORDER BY categoria, nombre")
+    productos = cursor.fetchall()
+
+    # Categorías
+    cursor.execute("SELECT DISTINCT categoria FROM productos ORDER BY categoria")
+    categorias = [row[0] for row in cursor.fetchall()]
+
+    conn.close()
+
+    # Producto a editar
+    producto_edit = None
+    if accion == "editar" and producto_id:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre, precio, categoria FROM productos WHERE id = ?", (producto_id,))
+        row = cursor.fetchone()
+        if row:
+            producto_edit = row
+        conn.close()
+
+    opciones_cat = ''.join(f'<option value="{c}">{c}</option>' for c in categorias)
+
+    # Tabla HTML
+    tabla_html = ""
+    if productos:
+        for p in productos:
+            tabla_html += f'''
+            <tr class="row-hover">
+                <td>{p[1]}</td>
+                <td>${p[2]:.2f}</td>
+                <td>{p[3]}</td>
+                <td class="actions">
+                    <a href="/productos?accion=editar&id={p[0]}" class="btn-edit"><i class="fas fa-edit"></i> Editar</a>
+                    <a href="/productos?accion=eliminar&id={p[0]}" onclick="return confirm('¿Eliminar {p[1]}?');" class="btn-delete"><i class="fas fa-trash"></i> Eliminar</a>
+                </td>
+            </tr>
+            '''
+    else:
+        tabla_html = '<tr><td colspan="4" class="empty">No hay productos registrados</td></tr>'
+
+    return f"""
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+            --gray: #636e72;
+        }}
+        body {{
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
+            margin: 0;
+            padding: 20px;
+            color: var(--dark);
+            min-height: 100vh;
+        }}
+        .atras {{
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            font-size: 1.1rem;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,180,216,0.3);
+        }}
+        h2 {{
+            text-align: center;
+            margin: 60px 0 30px;
+            font-size: 2.2rem;
+            color: var(--primary-dark);
+        }}
+        form {{
+            background: white;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+            max-width: 600px;
+            margin: 0 auto 50px;
+        }}
+        label {{
+            display: block;
+            margin: 15px 0 8px;
+            font-weight: 600;
+            color: var(--dark);
+        }}
+        input, select {{
+            width: 100%;
+            padding: 14px;
+            font-size: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            box-sizing: border-box;
+        }}
+        button {{
+            width: 100%;
+            padding: 16px;
+            font-size: 1.2rem;
+            background: var(--success);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: all 0.2s;
+        }}
+        button:hover {{
+            background: #05c08e;
+            transform: translateY(-2px);
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+        }}
+        th, td {{
+            padding: 16px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }}
+        th {{
+            background: var(--primary);
+            color: white;
+            font-weight: 600;
+        }}
+        .row-hover:hover {{
+            background: rgba(0,180,216,0.05);
+        }}
+        .actions a {{
+            margin-right: 15px;
+            text-decoration: none;
+            font-weight: 500;
+        }}
+        .btn-edit {{ color: var(--primary); }}
+        .btn-delete {{ color: var(--danger); }}
+        .mensaje {{
+            padding: 15px;
+            border-radius: 12px;
+            margin: 20px auto;
+            max-width: 600px;
+            text-align: center;
+            font-weight: 500;
+        }}
+        .success {{ background: rgba(6,214,160,0.15); color: var(--success); }}
+        .error {{ background: rgba(239,71,111,0.15); color: var(--danger); }}
+        .empty {{ text-align: center; padding: 30px; color: var(--gray); }}
+    </style>
+</head>
+<body>
+
+<button class="atras" onclick="history.back()"><i class="fas fa-arrow-left"></i> Atrás</button>
+
+<h2>Administrar Productos</h2>
+
+{mensaje and f'<div class="mensaje {tipo_mensaje}">{mensaje}</div>' or ''}
+
+<form method="POST">
+    {f'<input type="hidden" name="edit_id" value="{producto_edit[0]}">' if producto_edit else ''}
+    <label>Nombre del producto</label>
+    <input type="text" name="nombre" value="{producto_edit[1] if producto_edit else ''}" required placeholder="Ej: Margarita Clásica">
+
+    <label>Precio ($)</label>
+    <input type="number" name="precio" step="0.01" value="{producto_edit[2] if producto_edit else ''}" required placeholder="Ej: 85.00">
+
+    <label>Categoría</label>
+    <select name="categoria" required>
+        <option value="">-- Selecciona --</option>
+        {opciones_cat}
+    </select>
+
+    <button type="submit">
+        {'Actualizar Producto' if producto_edit else 'Agregar Producto'}
+    </button>
+</form>
+
+<h3>Productos registrados ({len(productos)})</h3>
+
+<table>
+    <thead>
+        <tr>
+            <th>Nombre</th>
+            <th>Precio</th>
+            <th>Categoría</th>
+            <th>Acciones</th>
+        </tr>
+    </thead>
+    <tbody>
+        {tabla_html}
+    </tbody>
+</table>
+
+</body>
+</html>
+"""
 
 
 @app.route("/api/agregar_producto", methods=["POST"])
 def api_agregar_producto():
-    comanda_id = request.form["comanda_id"]
-    producto_id = request.form["producto_id"]
+    comanda_id = int(request.form["comanda_id"])
+    producto_id = int(request.form["producto_id"])
+    cantidad = int(request.form.get("cantidad", 1))  # default 1
 
-    agregar_producto_a_comanda(comanda_id, producto_id)
+    agregar_producto_a_comanda(comanda_id, producto_id, cantidad)
 
     total = obtener_total_comanda(comanda_id)
     detalle = obtener_detalle_comanda(comanda_id)
@@ -765,6 +1515,100 @@ def api_quitar_producto():
         "detalle": detalle
     })
 
+@app.route("/api/cambiar_cantidad", methods=["POST"])
+def api_cambiar_cantidad():
+    detalle_id = int(request.form["detalle_id"])
+    delta = int(request.form["delta"])
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT comanda_id, cantidad, subtotal, producto_id
+        FROM comanda_detalle
+        WHERE id = ?
+    """, (detalle_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Item no encontrado"}), 404
+
+    comanda_id, cant_actual, subtotal_actual, producto_id = row
+
+    cursor.execute("SELECT precio FROM productos WHERE id=?", (producto_id,))
+    precio = cursor.fetchone()[0]
+
+    nueva_cant = cant_actual + delta
+    if nueva_cant <= 0:
+        cursor.execute("DELETE FROM comanda_detalle WHERE id = ?", (detalle_id,))
+    else:
+        nuevo_subtotal = nueva_cant * precio
+        cursor.execute("""
+            UPDATE comanda_detalle 
+            SET cantidad = ?, subtotal = ? 
+            WHERE id = ?
+        """, (nueva_cant, nuevo_subtotal, detalle_id))
+
+    conn.commit()
+    conn.close()
+
+    total = obtener_total_comanda(comanda_id)
+    detalle = obtener_detalle_comanda(comanda_id)
+
+    return jsonify({"total": total, "detalle": detalle})
+
+@app.route("/ver_comanda/<int:comanda_id>")
+def ver_comanda_solo_lectura(comanda_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT nombre_mesa, mesero FROM comandas WHERE id=?", (comanda_id,))
+    mesa, mesero = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT p.nombre, d.cantidad, p.precio
+        FROM comanda_detalle d
+        JOIN productos p ON d.producto_id = p.id
+        WHERE d.comanda_id = ?
+    """, (comanda_id,))
+    items = cursor.fetchall()
+
+    conn.close()
+
+    lineas = ""
+    total = 0
+    for nombre, cant, precio in items:
+        subtotal = cant * precio
+        total += subtotal
+        lineas += f"<div>{cant} × {nombre:.<30} ${subtotal:>8.2f}</div>"
+
+    return f"""
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <style>
+            body {{ font-family: Arial; padding: 15px; background: #f8f8f8; }}
+            h2 {{ text-align: center; }}
+            .total {{ font-size: 24px; font-weight: bold; text-align: right; margin-top: 20px; }}
+        </style>
+    </head>
+    <body>
+        <h2>JARDIN DORY'S - Cuenta</h2>
+        Mesa: {mesa}<br>
+        Mesero: {mesero}<br><br>
+        <hr>
+        {lineas}
+        <div class="total">TOTAL: ${total:.2f}</div>
+        <br><br>
+        <button onclick="history.back()">← Regresar</button>
+    </body>
+    </html>
+    """
+    
+from datetime import datetime  # asegúrate de tener esta import al inicio del archivo
+
+from datetime import datetime  # Asegúrate de tener esta import al inicio del archivo
+
 @app.route("/ticket/<int:comanda_id>")
 def ticket(comanda_id):
     conn = sqlite3.connect(DB_PATH)
@@ -773,76 +1617,157 @@ def ticket(comanda_id):
     cursor.execute("""
         SELECT nombre_mesa, mesero
         FROM comandas
-        WHERE id=?
+        WHERE id = ?
     """, (comanda_id,))
-    mesa, mesero = cursor.fetchone()
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return "Comanda no encontrada", 404
+
+    mesa, mesero = row
 
     cursor.execute("""
-        SELECT productos.nombre, comanda_detalle.cantidad, productos.precio
-        FROM comanda_detalle
-        JOIN productos ON productos.id = comanda_detalle.producto_id
-        WHERE comanda_detalle.comanda_id = ?
+        SELECT p.nombre, d.cantidad, p.precio, d.subtotal
+        FROM comanda_detalle d
+        JOIN productos p ON d.producto_id = p.id
+        WHERE d.comanda_id = ?
+        ORDER BY d.id
     """, (comanda_id,))
     items = cursor.fetchall()
 
     conn.close()
 
-    lineas = ""
-    total = 0
+    ahora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-    for nombre, cantidad, precio in items:
-        subtotal = cantidad * precio
+    lineas = ""
+    total = 0.0
+    for nombre, cantidad, precio, subtotal in items:
         total += subtotal
-        lineas += f"""
-        <div class="linea">
-            <span>{cantidad} x {nombre}</span>
-            <span>${subtotal}</span>
+        lineas += f'''
+        <div class="ticket-line">
+            <span class="qty">{cantidad} ×</span>
+            <span class="prod-name">{nombre}</span>
+            <span class="subtotal">${subtotal:.2f}</span>
         </div>
-        """
+        '''
 
     return f"""
 <html>
 <head>
-<style>
-body {{
-    font-family: monospace;
-    width: 280px;
-}}
-
-.linea {{
-    display: flex;
-    justify-content: space-between;
-}}
-
-.total {{
-    border-top: 1px dashed black;
-    margin-top: 10px;
-    padding-top: 10px;
-    font-weight: bold;
-    font-size: 18px;
-}}
-
-@media print {{
-    button {{ display: none; }}
-}}
-</style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticket - Jardín Dory's</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {{
+            font-family: 'Poppins', sans-serif;
+            width: 80mm;
+            margin: 0 auto;
+            padding: 10mm 5mm;
+            font-size: 12pt;
+            line-height: 1.4;
+            color: #000;
+            background: white;
+        }}
+        .header {{
+            text-align: center;
+            margin-bottom: 8mm;
+        }}
+        .logo {{
+            font-size: 20pt;
+            font-weight: 700;
+            color: #00b4d8;
+            margin: 0;
+        }}
+        .info {{
+            text-align: center;
+            font-size: 11pt;
+            margin-bottom: 6mm;
+            color: #444;
+        }}
+        .divider {{
+            border-top: 1px dashed #000;
+            margin: 4mm 0;
+        }}
+        .ticket-line {{
+            display: flex;
+            justify-content: space-between;
+            margin: 2mm 0;
+            font-size: 11pt;
+        }}
+        .qty {{
+            width: 15%;
+            text-align: left;
+        }}
+        .prod-name {{
+            flex: 1;
+            text-align: left;
+        }}
+        .subtotal {{
+            width: 30%;
+            text-align: right;
+            font-weight: 600;
+        }}
+        .total-section {{
+            margin-top: 8mm;
+            padding-top: 4mm;
+            border-top: 2px dashed #000;
+            text-align: right;
+            font-size: 14pt;
+            font-weight: 700;
+        }}
+        .gracias {{
+            text-align: center;
+            margin-top: 10mm;
+            font-style: italic;
+            color: #555;
+            font-size: 11pt;
+        }}
+        .print-btn {{
+            display: block;
+            margin: 20px auto;
+            padding: 12px 30px;
+            font-size: 14pt;
+            background: #00b4d8;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+        }}
+        @media print {{
+            .print-btn {{ display: none; }}
+            body {{ padding: 0; margin: 0; }}
+        }}
+    </style>
 </head>
-
 <body onload="window.print()">
 
-<h3>JARDIN DORY'S</h3>
-Mesa: {mesa}<br>
-Mesero: {mesero}
-<hr>
+<div class="header">
+    <div class="logo">JARDÍN DORY'S</div>
+    <div style="font-size:10pt; color:#666;">Albercas & Comida</div>
+</div>
+
+<div class="info">
+    Mesa: <strong>{mesa}</strong><br>
+    Mesero: <strong>{mesero}</strong><br>
+    Fecha: {ahora}
+</div>
+
+<div class="divider"></div>
 
 {lineas}
 
-<div class="total">
-TOTAL: ${total}
+<div class="total-section">
+    TOTAL: ${total:.2f}
 </div>
 
-<br><br>
-<button onclick="window.print()">Imprimir</button>
+<div class="divider"></div>
+
+<div class="gracias">
+    ¡Gracias por su visita!<br>
+    ¡Vuelva pronto! 🌴🍹
+</div>
+
+<button class="print-btn" onclick="window.print()">Imprimir de nuevo</button>
 
 </body>
 </html>
