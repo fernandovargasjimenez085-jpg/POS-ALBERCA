@@ -1107,6 +1107,16 @@ def productos_login():
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <style>
+        :root {{
+            --primary: #00b4d8;
+            --primary-dark: #0096c7;
+            --accent: #ff9e00;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --dark: #2d3436;
+            --light: #f8f9fa;
+            --gray: #636e72;
+        }}
         body {{
             font-family: 'Poppins', sans-serif;
             background: linear-gradient(135deg, #e0f7fa 0%, #f0f8ff 100%);
@@ -1128,7 +1138,7 @@ def productos_login():
             text-align: center;
         }}
         h2 {{
-            color: #00b4d8;
+            color: var(--primary);
             margin-bottom: 30px;
         }}
         input {{
@@ -1142,7 +1152,7 @@ def productos_login():
         button {{
             width: 100%;
             padding: 14px;
-            background: #00b4d8;
+            background: var(--primary);
             color: white;
             border: none;
             border-radius: 12px;
@@ -1151,10 +1161,10 @@ def productos_login():
             transition: background 0.2s;
         }}
         button:hover {{
-            background: #0096c7;
+            background: var(--primary-dark);
         }}
         .error {{
-            color: #ef476f;
+            color: var(--danger);
             margin-top: 15px;
             font-weight: 500;
         }}
@@ -1162,7 +1172,7 @@ def productos_login():
             position: absolute;
             top: 20px;
             left: 20px;
-            background: #00b4d8;
+            background: var(--primary);
             color: white;
             border: none;
             padding: 10px 16px;
@@ -1215,7 +1225,7 @@ def productos_admin():
     if request.method == "POST":
         nombre = request.form.get("nombre", "").strip()
         precio_str = request.form.get("precio", "").strip()
-        categoria = request.form.get("categoria", "").strip()
+        categoria = request.form.get("categoria", "").strip()  # ← viene del input (escrito o seleccionado)
         edit_id = request.form.get("edit_id", type=int)
 
         if not nombre or not categoria or not precio_str:
@@ -1251,7 +1261,7 @@ def productos_admin():
     cursor.execute("SELECT id, nombre, precio, categoria FROM productos ORDER BY categoria, nombre")
     productos = cursor.fetchall()
 
-    # Categorías
+    # Categorías existentes
     cursor.execute("SELECT DISTINCT categoria FROM productos ORDER BY categoria")
     categorias = [row[0] for row in cursor.fetchall()]
 
@@ -1346,6 +1356,19 @@ def productos_admin():
             font-weight: 600;
             color: var(--dark);
         }}
+        .categoria-group {{
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }}
+        .categoria-group select, .categoria-group input {{
+            flex: 1;
+            padding: 14px;
+            font-size: 1rem;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            box-sizing: border-box;
+        }}
         input, select {{
             width: 100%;
             padding: 14px;
@@ -1422,16 +1445,19 @@ def productos_admin():
 <form method="POST">
     {f'<input type="hidden" name="edit_id" value="{producto_edit[0]}">' if producto_edit else ''}
     <label>Nombre del producto</label>
-    <input type="text" name="nombre" value="{producto_edit[1] if producto_edit else ''}" required placeholder="Ej: Margarita Clásica">
+    <input type="text" name="nombre" value="{producto_edit[1] if producto_edit else ''}" required placeholder="Ej: Pelota de playa">
 
     <label>Precio ($)</label>
-    <input type="number" name="precio" step="0.01" value="{producto_edit[2] if producto_edit else ''}" required placeholder="Ej: 85.00">
+    <input type="number" name="precio" step="0.01" value="{producto_edit[2] if producto_edit else ''}" required placeholder="Ej: 150.00">
 
     <label>Categoría</label>
-    <select name="categoria" required>
-        <option value="">-- Selecciona --</option>
-        {opciones_cat}
-    </select>
+    <div class="categoria-group">
+        <select name="categoria_select" id="categoria_select" onchange="document.getElementById('categoria_input').value = this.value;">
+            <option value="">-- Selecciona una existente --</option>
+            {opciones_cat}
+        </select>
+        <input type="text" name="categoria" id="categoria_input" value="{producto_edit[3] if producto_edit else ''}" placeholder="O escribe una nueva" required>
+    </div>
 
     <button type="submit">
         {'Actualizar Producto' if producto_edit else 'Agregar Producto'}
